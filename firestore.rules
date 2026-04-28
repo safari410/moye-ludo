@@ -1,0 +1,147 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() { return request.auth != null; }
+    function isValidId(id) { return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); }
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+
+    function isValidUser(data) {
+      return data.keys().hasAny(['name', 'email', 'coins', 'level', 'wins', 'losses'])
+        && (!data.keys().hasAny(['name']) || (data.name is string && data.name.size() <= 100))
+        && (!data.keys().hasAny(['email']) || (data.email is string && data.email.size() <= 150))
+        && (!data.keys().hasAny(['avatar']) || data.avatar is string)
+        && (!data.keys().hasAny(['coins']) || data.coins is int)
+        && (!data.keys().hasAny(['level']) || data.level is int)
+        && (!data.keys().hasAny(['wins']) || data.wins is int)
+        && (!data.keys().hasAny(['losses']) || data.losses is int)
+        && (!data.keys().hasAny(['friends']) || (data.friends is list && data.friends.size() <= 100))
+        && (!data.keys().hasAny(['friendRequests']) || (data.friendRequests is list && data.friendRequests.size() <= 100))
+        && (!data.keys().hasAny(['sentRequests']) || (data.sentRequests is list && data.sentRequests.size() <= 100))
+        && (!data.keys().hasAny(['online']) || data.online is bool)
+        && (!data.keys().hasAny(['createdAt']) || data.createdAt is timestamp || data.createdAt is int)
+        && (!data.keys().hasAny(['updatedAt']) || data.updatedAt is timestamp || data.updatedAt is int);
+    }
+
+    match /users/{userId} {
+      allow get: if isSignedIn();
+      allow list: if isSignedIn();
+      allow create: if isSignedIn() && request.auth.uid == userId
+        && isValidUser(incoming());
+      allow update: if isSignedIn() 
+        && isValidUser(incoming())
+        && (
+          // Self update (Allowing stats update for demo purposes)
+          (request.auth.uid == userId)
+          ||
+          // Another user sending a friend request
+          (incoming().diff(existing()).affectedKeys().hasOnly(['friendRequests', 'updatedAt']) 
+           && request.auth.uid in incoming().friendRequests)
+          ||
+          // Another user accepting/declining/removing friend
+          (incoming().diff(existing()).affectedKeys().hasAny(['friends', 'friendRequests', 'sentRequests'])
+           && incoming().diff(existing()).affectedKeys().hasOnly(['friends', 'friendRequests', 'sentRequests', 'updatedAt']))
+        );
+    }
+
+    match /invites/{inviteId} {
+      allow read: if isSignedIn() && (resource.data.toId == request.auth.uid || resource.data.fromId == request.auth.uid);
+      allow create: if isSignedIn() && request.resource.data.fromId == request.auth.uid;
+      allow update: if isSignedIn() && (resource.data.toId == request.auth.uid || resource.data.fromId == request.auth.uid);
+      allow delete: if isSignedIn() && (resource.data.toId == request.auth.uid || resource.data.fromId == request.auth.uid);
+    }
+
+    function isValidRoom(data) {
+      return data.name is string && data.name.size() <= 100
+        && (!data.keys().hasAny(['pin']) || (data.pin is string && data.pin.size() <= 10))
+        && (!data.keys().hasAny(['description']) || (data.description is string && data.description.size() <= 400))
+        && data.hostId is string
+        && data.players is list && data.players.size() >= 1 && data.players.size() <= 4 && data.players[0] is string
+        && data.maxPlayers is int && data.maxPlayers >= 2 && data.maxPlayers <= 4
+        && data.status in ["waiting", "playing", "finished", "inviting", "ready"]
+        && (data.createdAt is timestamp || data.createdAt is int)
+        && (!data.keys().hasAny(['updatedAt']) || data.updatedAt is timestamp || data.updatedAt is int)
+        && (!data.keys().hasAny(['entryFee']) || data.entryFee is int)
+        && (!data.keys().hasAny(['withAI']) || data.withAI is bool)
+        && (!data.keys().hasAny(['gameId']) || data.gameId is string);
+    }
+
+    match /rooms/{roomId} {
+      allow get: if isSignedIn() && isValidId(roomId);
+      allow list: if isSignedIn();
+      allow create: if isSignedIn()
+        && isValidId(roomId)
+        && isValidRoom(incoming())
+        && incoming().hostId == request.auth.uid
+        && incoming().players[0] == request.auth.uid;
+
+      allow update: if isSignedIn()
+        && isValidId(roomId)
+        && isValidRoom(incoming())
+        && (
+            // Join Room Action
+            (incoming().diff(existing()).affectedKeys().hasOnly(['players', 'status', 'updatedAt'])
+             && existing().status in ['waiting', 'inviting']
+             && existing().players.size() < existing().maxPlayers
+             // request.auth.uid in incoming().players // Removed strict check to allow AI bots addition or invite acceptance
+            )
+            ||
+            // Host Update Action (start/finish game)
+            (existing().hostId == request.auth.uid
+             && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'gameId', 'updatedAt'])
+             && (incoming().status == 'playing' || incoming().status == 'finished')
+            )
+            ||
+            // Any player finishing the room
+            (incoming().status == 'finished' && request.auth.uid in existing().players && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']))
+            ||
+            // Backend Function updates
+            false
+        );
+      
+      allow delete: if isSignedIn() && existing().hostId == request.auth.uid && existing().status == 'waiting';
+    }
+
+    function isValidGame(data) {
+      return data.roomId is string
+        && data.currentTurn is string
+        && data.players is list
+        && data.status in ["playing", "finished"]
+        && (data.createdAt is timestamp || data.createdAt is int)
+        && (!data.keys().hasAny(['board']) || data.board is map)
+        && (!data.keys().hasAny(['tokensPosition']) || data.tokensPosition is map)
+        && (!data.keys().hasAny(['diceValue']) || data.diceValue is int || data.diceValue == null)
+        && (!data.keys().hasAny(['consecutiveSixes']) || data.consecutiveSixes is int)
+        && (!data.keys().hasAny(['winner']) || data.winner is string || data.winner == null)
+        && (!data.keys().hasAny(['updatedAt']) || data.updatedAt is timestamp || data.updatedAt is int);
+    }
+
+    match /games/{gameId} {
+      allow get: if isSignedIn() && isValidId(gameId) && request.auth.uid in resource.data.players;
+      allow list: if isSignedIn() && request.auth.uid in resource.data.players;
+      allow create: if isSignedIn() && isValidGame(incoming()) && request.auth.uid in incoming().players;
+      
+      allow update: if isSignedIn()
+        && isValidId(gameId)
+        && isValidGame(incoming())
+        && request.auth.uid in existing().players
+        && (
+          // Standard turn or AI turn handled by host
+          (existing().currentTurn == request.auth.uid) ||
+          (existing().currentTurn.matches('^ai_.*') && existing().players[0] == request.auth.uid) ||
+          (incoming().status == 'finished') // Allow ending game
+        );
+    }
+
+    match /chats/{roomId}/messages/{messageId} {
+      // Allowed to get/list messages if in room, simplify to signed in for now
+      allow read: if isSignedIn(); 
+      allow create: if isSignedIn() && incoming().senderId == request.auth.uid;
+    }
+  }
+}

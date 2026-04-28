@@ -1,0 +1,108 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile document",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "maxLength": 100 },
+        "email": { "type": "string", "format": "email" },
+        "avatar": { "type": "string" },
+        "coins": { "type": "integer" },
+        "level": { "type": "integer" },
+        "wins": { "type": "integer" },
+        "losses": { "type": "integer" },
+        "friends": {
+          "type": "array",
+          "items": { "type": "string" },
+          "maxItems": 100
+        },
+        "friendRequests": {
+          "type": "array",
+          "items": { "type": "string" },
+          "maxItems": 100
+        },
+        "sentRequests": {
+          "type": "array",
+          "items": { "type": "string" },
+          "maxItems": 100
+        },
+        "online": { "type": "boolean" },
+        "createdAt": { "type": "integer" },
+        "updatedAt": { "type": "integer" }
+      },
+      "required": ["name", "email", "coins", "level", "wins", "losses"]
+    },
+    "Room": {
+      "title": "Room",
+      "description": "Lobby/Room before game starts",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "maxLength": 100 },
+        "pin": { "type": "string", "maxLength": 10 },
+        "description": { "type": "string", "maxLength": 400 },
+        "hostId": { "type": "string" },
+        "players": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1,
+          "maxItems": 4
+        },
+        "maxPlayers": { "type": "integer" },
+        "status": { "type": "string", "enum": ["waiting", "playing", "finished", "inviting", "ready"] },
+        "withAI": { "type": "boolean" },
+        "createdAt": { "type": "integer" },
+        "entryFee": { "type": "integer" }
+      },
+      "required": ["name", "hostId", "players", "maxPlayers", "status", "createdAt"]
+    },
+    "Game": {
+      "title": "Game",
+      "description": "Active Ludo game state",
+      "type": "object",
+      "properties": {
+        "roomId": { "type": "string" },
+        "boardState": { "type": "object" },
+        "currentTurn": { "type": "string" },
+        "diceValue": { "type": "integer" },
+        "players": { "type": "array", "items": { "type": "string" } },
+        "tokensPosition": { "type": "object" },
+        "winner": { "type": "string" },
+        "status": { "type": "string", "enum": ["playing", "finished"] },
+        "createdAt": { "type": "integer" },
+        "updatedAt": { "type": "integer" }
+      },
+      "required": ["roomId", "currentTurn", "players", "status"]
+    },
+    "Message": {
+      "title": "Message",
+      "description": "Chat message inside a room",
+      "type": "object",
+      "properties": {
+        "senderId": { "type": "string" },
+        "senderName": { "type": "string" },
+        "text": { "type": "string", "maxLength": 1000 },
+        "createdAt": { "type": "integer" }
+      },
+      "required": ["senderId", "text", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "User profiles"
+    },
+    "/rooms/{roomId}": {
+      "schema": { "$ref": "#/entities/Room" },
+      "description": "Active and past Ludo rooms"
+    },
+    "/games/{gameId}": {
+      "schema": { "$ref": "#/entities/Game" },
+      "description": "Active Ludo games and state"
+    },
+    "/chats/{roomId}/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/Message" },
+      "description": "Room chat messages"
+    }
+  }
+}
