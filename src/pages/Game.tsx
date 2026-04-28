@@ -1,12 +1,13 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { doc, onSnapshot, getDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, onSnapshot, getDoc, updateDoc, serverTimestamp, arrayUnion } from 'firebase/firestore';
 import { db, auth } from '../lib/firebase';
 import { useAuthStore } from '../store/authStore';
 import { motion, AnimatePresence } from 'motion/react';
-import { HelpCircle, LogOut, Navigation, Send, Trophy } from 'lucide-react';
+import { HelpCircle, LogOut, Navigation, Send, Trophy, Smile } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { getPlayerPath, SAFE_ZONE_COORDS } from '../lib/ludoEngine';
+import { EmojiPicker } from '../components/EmojiPicker';
 
 enum OperationType {
   CREATE = 'create',
@@ -51,7 +52,27 @@ export default function Game() {
   const [players, setPlayers] = useState<any[]>([]);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [chatMessage, setChatMessage] = useState("");
-  const [messages, setMessages] = useState<any[]>([]);
+  const [showEmoji, setShowEmoji] = useState(false);
+
+  const handleSendMessage = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!chatMessage.trim() || !user || !gameId) return;
+
+    try {
+      await updateDoc(doc(db, 'games', gameId), {
+        chatMessages: arrayUnion({
+          senderId: user.uid,
+          senderName: profile?.name || 'Player',
+          text: chatMessage.trim(),
+          timestamp: Date.now()
+        })
+      });
+      setChatMessage("");
+      setShowEmoji(false);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `games/${gameId}/chat`);
+    }
+  };
 
   const [showRules, setShowRules] = useState(false);
   const [tokenCoords, setTokenCoords] = useState<any[]>([]);
@@ -131,6 +152,7 @@ export default function Game() {
 
   const checkWinner = (tokens: any, players: string[]) => {
     for (const pid of players) {
+      if (pid.startsWith('empty_')) continue;
       let finishedCount = 0;
       for (let i = 1; i <= 4; i++) {
         if (tokens[`${pid}_${i}`] === 'finished') finishedCount++;
@@ -138,6 +160,14 @@ export default function Game() {
       if (finishedCount === 4) return pid;
     }
     return null;
+  };
+
+  const getNextTurnIdx = (currentIndex: number) => {
+    let nextIdx = (currentIndex + 1) % game.players.length;
+    while (game.players[nextIdx].startsWith('empty_')) {
+      nextIdx = (nextIdx + 1) % game.players.length;
+    }
+    return nextIdx;
   };
 
   const moveToken = async (tokenId: string) => {
@@ -203,7 +233,8 @@ export default function Game() {
     if (captureHappened) toast.success("ENEMY CAPTURED! Bonus turn!");
 
     const winner = checkWinner(newTokens, game.players);
-    const nextTurnIdx = (game.players.indexOf(pid) + (dice === 6 || captureHappened ? 0 : 1)) % game.players.length;
+    const pCurrentIdx = game.players.indexOf(pid);
+    const nextTurnIdx = (dice === 6 || captureHappened) ? pCurrentIdx : getNextTurnIdx(pCurrentIdx);
 
     try {
       await updateDoc(doc(db, 'games', gameId as string), {
@@ -310,7 +341,7 @@ export default function Game() {
           if (val === 6) consecutive++; else consecutive = 0;
 
           if (consecutive === 3) {
-             const nextIdx = (game.players.indexOf(pid) + 1) % game.players.length;
+             const nextIdx = getNextTurnIdx(game.players.indexOf(pid));
              await updateDoc(doc(db, 'games', gameId as string), {
                diceValue: val,
                consecutiveSixes: 0,
@@ -333,7 +364,7 @@ export default function Game() {
           });
 
           if (movableTokens.length === 0 && val !== 6) {
-             const nextIdx = (game.players.indexOf(pid) + 1) % game.players.length;
+             const nextIdx = getNextTurnIdx(game.players.indexOf(pid));
              await updateDoc(doc(db, 'games', gameId as string), {
                diceValue: val,
                consecutiveSixes: 0,
@@ -408,7 +439,8 @@ export default function Game() {
           }
 
           const winner = checkWinner(nextTokens, game.players);
-          const nextTurnIdx = (game.players.indexOf(pid) + (val === 6 || captureHappened ? 0 : 1)) % game.players.length;
+          const pCurrentIdx = game.players.indexOf(pid);
+          const nextTurnIdx = (val === 6 || captureHappened) ? pCurrentIdx : getNextTurnIdx(pCurrentIdx);
 
           await updateDoc(doc(db, 'games', gameId as string), {
             tokensPosition: nextTokens,
@@ -472,10 +504,32 @@ export default function Game() {
         }
 
         if (isSafe) {
-          ctx.fillStyle = '#ffffff20';
+          const cx = x + cellSize / 2;
+          const cy = y + cellSize / 2;
+          const outerRadius = cellSize * 0.35;
+          const innerRadius = cellSize * 0.15;
+          const spikes = 5;
+
+          ctx.shadowBlur = 8;
+          ctx.shadowColor = '#fbbf24';
+          ctx.fillStyle = '#fcd34d';
+
           ctx.beginPath();
-          ctx.arc(x + cellSize/2, y + cellSize/2, cellSize/4, 0, Math.PI * 2);
+          let rot = (Math.PI / 2) * 3;
+          let step = Math.PI / spikes;
+
+          ctx.moveTo(cx, cy - outerRadius);
+          for (let i = 0; i < spikes; i++) {
+            ctx.lineTo(cx + Math.cos(rot) * outerRadius, cy + Math.sin(rot) * outerRadius);
+            rot += step;
+            ctx.lineTo(cx + Math.cos(rot) * innerRadius, cy + Math.sin(rot) * innerRadius);
+            rot += step;
+          }
+          ctx.lineTo(cx, cy - outerRadius);
+          ctx.closePath();
           ctx.fill();
+
+          ctx.shadowBlur = 0;
         }
 
         if (arrow) {
@@ -746,7 +800,7 @@ export default function Game() {
 
       if (consecutive === 3) {
         toast.error("Triple 6! Turn passed.");
-        const nextIdx = (game.players.indexOf(user?.uid) + 1) % game.players.length;
+        const nextIdx = getNextTurnIdx(game.players.indexOf(user?.uid));
         try {
           await updateDoc(doc(db, 'games', gameId as string), {
             diceValue: val,
@@ -777,7 +831,7 @@ export default function Game() {
 
       if (movableTokens.length === 0 && val !== 6) {
         toast.error(`Rolled ${val}. No moves possible! Passing turn...`);
-        const nextIdx = (game.players.indexOf(user?.uid) + 1) % game.players.length;
+        const nextIdx = getNextTurnIdx(game.players.indexOf(user?.uid));
         try {
           await updateDoc(doc(db, 'games', gameId as string), {
             diceValue: val,
@@ -869,8 +923,9 @@ export default function Game() {
         </div>
         
         <div className="flex-1 overflow-y-auto px-4 space-y-3">
-          {players.map((p, i) => {
+          {players.filter(p => p && !p.id.startsWith('empty_')).map((p, i) => {
             const isTurn = game.currentTurn === p.id;
+            const originalIndex = game.players.indexOf(p.id);
             const colors = ['border-red-500', 'border-green-500', 'border-yellow-500', 'border-blue-500'];
             const glowColors = ['shadow-red-500/20', 'shadow-green-500/20', 'shadow-yellow-500/20', 'shadow-blue-500/20'];
             return (
@@ -878,17 +933,17 @@ export default function Game() {
                 key={p.id} 
                 animate={isTurn ? { x: [0, 5, 0] } : {}}
                 transition={{ duration: 2, repeat: Infinity }}
-                className={`flex items-center gap-4 p-4 rounded-2xl bg-slate-800/40 border-2 transition-all shadow-lg ${isTurn ? `${colors[i]} ${glowColors[i]} bg-slate-800/80` : 'border-white/5 hover:bg-slate-800/60'}`}
+                className={`flex items-center gap-4 p-4 rounded-2xl bg-slate-800/40 border-2 transition-all shadow-lg ${isTurn ? `${colors[originalIndex]} ${glowColors[originalIndex]} bg-slate-800/80` : 'border-white/5 hover:bg-slate-800/60'}`}
               >
                 <div className="relative">
                   <img src={p.avatar} alt={p.name} className="w-12 h-12 rounded-xl bg-slate-900 border border-white/10" />
                   {isTurn && (
-                    <div className={`absolute -top-1 -right-1 w-4 h-4 rounded-full border-2 border-slate-900 ${colors[i].replace('border-', 'bg-')}`} />
+                    <div className={`absolute -top-1 -right-1 w-4 h-4 rounded-full border-2 border-slate-900 ${colors[originalIndex].replace('border-', 'bg-')}`} />
                   )}
                 </div>
                 <div className="flex-1 min-w-0">
                   <p className="font-bold text-white truncate">{p.name}</p>
-                  <p className={`text-[10px] font-black uppercase tracking-tighter ${isTurn ? colors[i].replace('border-', 'text-') : 'text-slate-500'}`}>
+                  <p className={`text-[10px] font-black uppercase tracking-tighter ${isTurn ? colors[originalIndex].replace('border-', 'text-') : 'text-slate-500'}`}>
                     {isTurn ? 'COMMANDING' : 'READY'}
                   </p>
                 </div>
@@ -989,37 +1044,55 @@ export default function Game() {
           </button>
         </div>
 
-        {/* Chat Section (Locked during game) */}
-        <div className="flex-1 flex flex-col">
+        {/* Chat Section */}
+        <div className="flex-1 flex flex-col relative z-20">
           <div className="p-4 border-b border-white/5 font-bold text-white flex items-center gap-2">
             Match Chat
           </div>
-          <div className="flex-1 p-4 flex flex-col justify-end bg-slate-950/50">
-            {game.status === 'playing' ? (
-               <div className="flex flex-col items-center text-slate-500 mb-4 opacity-50">
-                  <LogOut className="w-8 h-8 mb-2" />
-                  <p className="text-sm text-center">Chat is disabled<br/>until the game ends.</p>
-               </div>
-            ) : (
-              <div className="space-y-4 mb-4">
-                {/* Chat messages would go here */}
-                <div className="bg-slate-800 text-sm p-3 rounded-xl max-w-[80%] rounded-bl-none text-white">GGs!</div>
-              </div>
-            )}
+          <div className="flex-1 p-4 flex flex-col justify-end bg-slate-950/50 overflow-hidden">
+            <div className="space-y-4 mb-4 overflow-y-auto custom-scrollbar flex-1 pb-4 flex flex-col justify-end">
+              {(game.chatMessages || []).map((msg: any, i: number) => {
+                const isMe = msg.senderId === user?.uid;
+                return (
+                  <div key={i} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
+                    <span className="text-[10px] text-slate-500 mb-1 ml-1 font-bold">{msg.senderName}</span>
+                    <div className={`text-sm p-3 rounded-xl max-w-[85%] text-white ${isMe ? 'bg-indigo-600 rounded-br-none' : 'bg-slate-800 rounded-bl-none'}`}>
+                      {msg.text}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
           
-          <div className="p-4 bg-slate-900 border-t border-white/5">
-             <div className="flex relative">
+          <div className="p-4 bg-slate-900 border-t border-white/5 relative">
+             <AnimatePresence>
+               {showEmoji && (
+                  <EmojiPicker 
+                    onSelect={(emoji) => setChatMessage(prev => prev + emoji)}
+                    onClose={() => setShowEmoji(false)}
+                  />
+               )}
+             </AnimatePresence>
+             <form onSubmit={handleSendMessage} className="flex relative">
+                <button 
+                  type="button"
+                  onClick={() => setShowEmoji(!showEmoji)}
+                  className="absolute left-1 top-1 bottom-1 w-10 flex items-center justify-center text-slate-400 hover:text-yellow-400 transition-colors z-10"
+                >
+                  <Smile className="w-5 h-5" />
+                </button>
                 <input 
                   type="text"
-                  disabled={game.status === 'playing'}
-                  placeholder={game.status === 'playing' ? "Chat locked..." : "Message..."} 
-                  className="w-full bg-slate-950 border border-slate-800 rounded-full py-3 pl-4 pr-12 outline-none text-sm disabled:opacity-50"
+                  value={chatMessage}
+                  onChange={(e) => setChatMessage(e.target.value)}
+                  placeholder="Message..." 
+                  className="w-full bg-slate-950 border border-slate-800 rounded-full py-3 pl-12 pr-12 outline-none text-sm focus:border-indigo-500 transition-colors text-white"
                 />
-                <button disabled={game.status === 'playing'} className="absolute right-1 top-1 bottom-1 w-10 bg-indigo-500 rounded-full flex items-center justify-center text-white disabled:opacity-50">
+                <button type="submit" disabled={!chatMessage.trim()} className="absolute right-1 top-1 bottom-1 w-10 bg-indigo-500 rounded-full flex items-center justify-center text-white disabled:opacity-50">
                   <Send className="w-4 h-4" />
                 </button>
-             </div>
+             </form>
           </div>
         </div>
       </div>

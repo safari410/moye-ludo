@@ -102,6 +102,15 @@ export default function Room() {
       // 1. Create a game state document using the roomId as the gameId for structural simplicity
       const gameRef = doc(db, 'games', roomId as string);
       
+      // Ensure proper 4-seat positioning
+      let arrangedPlayers = [...room.players];
+      if (arrangedPlayers.length === 2) {
+        // Red and Yellow (Offsets 0 and 2)
+        arrangedPlayers = [arrangedPlayers[0], 'empty_1', arrangedPlayers[1], 'empty_2'];
+      } else if (arrangedPlayers.length === 3) {
+        arrangedPlayers = [arrangedPlayers[0], arrangedPlayers[1], arrangedPlayers[2], 'empty_1'];
+      }
+
       // Setup initial board state
       const tokensPosition: Record<string, string> = {};
       
@@ -116,9 +125,9 @@ export default function Room() {
         await setDoc(gameRef, {
           roomId: roomId,
           currentTurn: room.players[0],
-          diceValue: 0,
+          diceValue: null,
           consecutiveSixes: 0,
-          players: room.players,
+          players: arrangedPlayers,
           tokensPosition,
           status: 'playing',
           createdAt: serverTimestamp(),
