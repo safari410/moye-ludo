@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { doc, onSnapshot, getDoc, updateDoc, serverTimestamp, arrayUnion } from 'firebase/firestore';
+import { doc, onSnapshot, getDoc, updateDoc, serverTimestamp, arrayUnion, runTransaction } from 'firebase/firestore';
 import { db, auth } from '../lib/firebase';
 import { useAuthStore } from '../store/authStore';
 import { motion, AnimatePresence } from 'motion/react';
@@ -172,85 +172,111 @@ export default function Game() {
 
   const moveToken = async (tokenId: string) => {
     if (!game || game.currentTurn !== user?.uid || !game.diceValue || animatingToken) return;
-    
-    // Correctly split tokenId: playerID is everything before the last underscore
-    const lastUnderscore = tokenId.lastIndexOf('_');
-    const pid = tokenId.substring(0, lastUnderscore);
-    const tNum = tokenId.substring(lastUnderscore + 1);
-    
-    if (pid !== user.uid) return;
-
-    const currentPos = game.tokensPosition[tokenId];
-    const dice = game.diceValue;
-    let nextPos: any = currentPos;
-
-    let tokenFinished = false;
-    if (currentPos === 'base') {
-      if (dice === 6) nextPos = 0;
-      else return; 
-    } else if (currentPos === 'finished') {
-      return;
-    } else {
-      const pIdx = game.players.indexOf(pid);
-      const playerPath = getPlayerPath(pIdx);
-      if (currentPos + dice > playerPath.length) {
-        toast.error("Need exact roll to finish!");
-        return; 
-      } else if (currentPos + dice === playerPath.length) {
-        nextPos = 'finished';
-        tokenFinished = true;
-      } else {
-        nextPos = currentPos + dice;
-      }
-    }
-
-    const newTokens = { ...game.tokensPosition, [tokenId]: nextPos };
-    const pIdx = game.players.indexOf(pid);
-    const playerPath = getPlayerPath(pIdx);
-    
-    let captureHappened = false;
-    if (typeof nextPos === 'number') {
-      const targetCoord = playerPath[nextPos];
-      const isSafe = SAFE_ZONE_COORDS.some(c => c[0] === targetCoord[0] && c[1] === targetCoord[1]);
-
-      if (!isSafe) {
-        Object.entries(newTokens).forEach(([tid, pos]) => {
-          const otherLastUnderscore = tid.lastIndexOf('_');
-          const otherPid = tid.substring(0, otherLastUnderscore);
-          
-          if (otherPid === pid || pos === 'base' || pos === 'finished') return;
-          
-          const otherPIdx = game.players.indexOf(otherPid);
-          const otherPath = getPlayerPath(otherPIdx);
-          const otherCoord = otherPath[pos as number];
-          
-          if (otherCoord[0] === targetCoord[0] && otherCoord[1] === targetCoord[1]) {
-            newTokens[tid] = 'base';
-            captureHappened = true;
-          }
-        });
-      }
-    }
-
-    if (captureHappened) toast.success("ENEMY CAPTURED! Bonus turn!");
-    if (tokenFinished) toast.success("TOKEN FINISHED! Bonus turn!");
-
-    const winner = checkWinner(newTokens, game.players);
-    const pCurrentIdx = game.players.indexOf(pid);
-    const nextTurnIdx = (dice === 6 || captureHappened || tokenFinished) ? pCurrentIdx : getNextTurnIdx(pCurrentIdx);
 
     try {
-      await updateDoc(doc(db, 'games', gameId as string), {
-        tokensPosition: newTokens,
-        diceValue: null,
-        consecutiveSixes: (dice === 6 || captureHappened) ? (game.consecutiveSixes || 0) : 0,
-        currentTurn: winner ? pid : game.players[nextTurnIdx],
-        status: winner ? 'finished' : 'playing',
-        winner: winner || null,
-        updatedAt: serverTimestamp()
+      await runTransaction(db, async (transaction) => {
+        const gameRef = doc(db, 'games', gameId as string);
+        const gameDoc = await transaction.get(gameRef);
+        if (!gameDoc.exists()) throw "Game not found";
+
+        const serverGame = gameDoc.data();
+        if (serverGame.currentTurn !== user?.uid || !serverGame.diceValue) {
+           throw "Not your turn or no dice value!";
+        }
+
+        const lastUnderscore = tokenId.lastIndexOf('_');
+        const pid = tokenId.substring(0, lastUnderscore);
+        if (pid !== user.uid) throw "Not your token!";
+
+        const currentPos = serverGame.tokensPosition[tokenId];
+        const dice = serverGame.diceValue;
+        
+        console.log("--- MOVE ATTEMPT ---");
+        console.log("currentTurn:", serverGame.currentTurn);
+        console.log("diceValue:", dice);
+        console.log("tokenPositions BEFORE:", JSON.parse(JSON.stringify(serverGame.tokensPosition)));
+
+        let nextPos: any = currentPos;
+
+        let tokenFinished = false;
+        if (currentPos === 'base') {
+          if (dice === 6) nextPos = 0;
+          else throw "Cannot move from base without a 6!"; 
+        } else if (currentPos === 'finished') {
+          throw "Token already finished!";
+        } else {
+          const pIdx = serverGame.players.indexOf(pid);
+          if (pIdx === -1) throw "Player not found";
+          const playerPath = getPlayerPath(pIdx);
+          if (currentPos + dice > playerPath.length) {
+            throw "Need exact roll to finish!";
+          } else if (currentPos + dice === playerPath.length) {
+            nextPos = 'finished';
+            tokenFinished = true;
+          } else {
+            nextPos = currentPos + dice;
+          }
+        }
+
+        const newTokens = { ...serverGame.tokensPosition, [tokenId]: nextPos };
+        
+        console.log("tokenPositions AFTER:", JSON.parse(JSON.stringify(newTokens)));
+        console.log("--- END MOVE ---");
+
+        const pIdx = serverGame.players.indexOf(pid);
+        const playerPath = getPlayerPath(pIdx);
+        
+        let captureHappened = false;
+        if (typeof nextPos === 'number') {
+          const targetCoord = playerPath[nextPos];
+          const isSafe = SAFE_ZONE_COORDS.some(c => c[0] === targetCoord[0] && c[1] === targetCoord[1]);
+
+          if (!isSafe) {
+            Object.entries(newTokens).forEach(([tid, pos]) => {
+              const otherLastUnderscore = tid.lastIndexOf('_');
+              const otherPid = tid.substring(0, otherLastUnderscore);
+              
+              if (otherPid === pid || pos === 'base' || pos === 'finished') return;
+              
+              const otherPIdx = serverGame.players.indexOf(otherPid);
+              const otherPath = getPlayerPath(otherPIdx);
+              const otherCoord = otherPath[pos as number];
+              
+              if (otherCoord[0] === targetCoord[0] && otherCoord[1] === targetCoord[1]) {
+                newTokens[tid] = 'base';
+                captureHappened = true;
+              }
+            });
+          }
+        }
+
+        const winner = checkWinner(newTokens, serverGame.players);
+        const pCurrentIdx = serverGame.players.indexOf(pid);
+        
+        const getNextTurn = (currentIndex: number) => {
+          let nextIdx = (currentIndex + 1) % serverGame.players.length;
+          while (serverGame.players[nextIdx].startsWith('empty_')) {
+            nextIdx = (nextIdx + 1) % serverGame.players.length;
+          }
+          return nextIdx;
+        };
+        
+        const nextTurnIdx = (dice === 6 || captureHappened || tokenFinished) ? pCurrentIdx : getNextTurn(pCurrentIdx);
+
+        transaction.update(gameRef, {
+          tokensPosition: newTokens,
+          diceValue: null,
+          consecutiveSixes: (dice === 6 || captureHappened) ? (serverGame.consecutiveSixes || 0) : 0,
+          currentTurn: winner ? pid : serverGame.players[nextTurnIdx],
+          status: winner ? 'finished' : 'playing',
+          winner: winner || null,
+          updatedAt: serverTimestamp()
+        });
       });
-    } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `games/${gameId}`);
+      console.log('Transaction success');
+    } catch (err: any) {
+      console.error("Move error:", err);
+      // Just catch, don't show toast for every click since they might double click
     }
   };
 
@@ -330,15 +356,6 @@ export default function Game() {
         if (game.diceValue === null) {
           // AI Rolls
           let val = Math.floor(Math.random() * 6) + 1;
-          
-          const stuck = Object.entries(tokens)
-            .filter(([tid]) => {
-               const lastIdx = tid.lastIndexOf('_');
-               return tid.substring(0, lastIdx) === pid;
-            })
-            .every(([, pos]) => pos === 'base');
-          
-          if (stuck && Math.random() < 0.45) val = 6;
           
           let consecutive = (game.consecutiveSixes || 0);
           if (val === 6) consecutive++; else consecutive = 0;
@@ -772,101 +789,98 @@ export default function Game() {
   };
 
   const handleRollDice = async () => {
-    if (!game || game.currentTurn !== user?.uid || game.status !== 'playing') {
-       toast.error("Not your turn!");
-       return;
-    }
-    if (game.diceValue) {
-       toast.error("Move your token first!");
+    if (!game || game.currentTurn !== user?.uid || game.status !== 'playing' || game.diceValue) {
        return;
     }
     
     try {
-      // Improved Dice Logic: Added a 'pity' system for users stuck in base
-      let val = Math.floor(Math.random() * 6) + 1;
-      
-      const pid = user.uid;
-      const stuckInBase = Object.entries(game.tokensPosition)
-        .filter(([tid]) => {
-          const lastUnderscore = tid.lastIndexOf('_');
-          return tid.substring(0, lastUnderscore) === pid;
-        })
-        .every(([, pos]) => pos === 'base');
+      const result = await runTransaction(db, async (transaction) => {
+        const gameRef = doc(db, 'games', gameId as string);
+        const gameDoc = await transaction.get(gameRef);
+        if (!gameDoc.exists()) throw "Game not found";
 
-      // Higher chance of 6 if stuck
-      if (stuckInBase && Math.random() < 0.4) {
-        val = 6;
-      }
+        const serverGame = gameDoc.data();
+        if (serverGame.currentTurn !== user?.uid || serverGame.status !== 'playing') {
+           throw "Not your turn!";
+        }
+        if (serverGame.diceValue) {
+           throw "Already rolled or move pending!";
+        }
+        
+        const val = Math.floor(Math.random() * 6) + 1;
+        const pid = user.uid as string;
+        
+        let consecutive = (serverGame.consecutiveSixes || 0);
+        if (val === 6) {
+          consecutive++;
+        } else {
+          consecutive = 0;
+        }
 
-      let consecutive = (game.consecutiveSixes || 0);
-      if (val === 6) {
-        consecutive++;
-      } else {
-        consecutive = 0;
-      }
+        const getNextTurn = (currentIndex: number) => {
+          let nextIdx = (currentIndex + 1) % serverGame.players.length;
+          while (serverGame.players[nextIdx].startsWith('empty_')) {
+            nextIdx = (nextIdx + 1) % serverGame.players.length;
+          }
+          return nextIdx;
+        };
 
-      if (consecutive === 3) {
-        toast.error("Triple 6! Turn passed.");
-        const nextIdx = getNextTurnIdx(game.players.indexOf(user?.uid));
-        try {
-          await updateDoc(doc(db, 'games', gameId as string), {
+        if (consecutive === 3) {
+          const nextIdx = getNextTurn(serverGame.players.indexOf(pid));
+          transaction.update(gameRef, {
             diceValue: val,
             consecutiveSixes: 0,
-            currentTurn: game.players[nextIdx],
+            currentTurn: serverGame.players[nextIdx],
             updatedAt: serverTimestamp()
           });
-        } catch (err) {
-          handleFirestoreError(err, OperationType.UPDATE, `games/${gameId}`);
+          return { type: 'triple6', val };
         }
-        setTimeout(() => {
-          if (gameId) updateDoc(doc(db, 'games', gameId), { diceValue: null });
-        }, 1500);
-        return;
-      }
-      
-      const pIdx = game.players.indexOf(pid);
-      const tokens = game.tokensPosition;
-      const movableTokens = Object.keys(tokens).filter(tid => {
-        const lastIdx = tid.lastIndexOf('_');
-        if (tid.substring(0, lastIdx) !== pid) return false;
-        const pos = tokens[tid];
-        if (pos === 'finished') return false;
-        if (pos === 'base') return val === 6;
-        const pathLen = getPlayerPath(pIdx).length;
-        return (typeof pos === 'number') && (pos + val <= pathLen);
-      });
+        
+        const pIdx = serverGame.players.indexOf(pid);
+        const tokens = serverGame.tokensPosition;
+        const movableTokens = Object.keys(tokens).filter(tid => {
+          const lastIdx = tid.lastIndexOf('_');
+          if (tid.substring(0, lastIdx) !== pid) return false;
+          const pos = tokens[tid];
+          if (pos === 'finished') return false;
+          if (pos === 'base') return val === 6;
+          const pathLen = getPlayerPath(pIdx).length;
+          return (typeof pos === 'number') && (pos + val <= pathLen);
+        });
 
-      if (movableTokens.length === 0) {
-        toast.error(`Rolled ${val}. No moves possible!`);
-        const nextIdx = val === 6 ? game.players.indexOf(user?.uid) : getNextTurnIdx(game.players.indexOf(user?.uid));
-        try {
-          await updateDoc(doc(db, 'games', gameId as string), {
+        if (movableTokens.length === 0) {
+          const nextIdx = val === 6 ? serverGame.players.indexOf(pid) : getNextTurn(serverGame.players.indexOf(pid));
+          transaction.update(gameRef, {
             diceValue: val,
             consecutiveSixes: val === 6 ? consecutive : 0,
-            currentTurn: game.players[nextIdx],
+            currentTurn: serverGame.players[nextIdx],
             updatedAt: serverTimestamp()
           });
-        } catch (err) {
-          handleFirestoreError(err, OperationType.UPDATE, `games/${gameId}`);
+          return { type: 'nomoves', val };
         }
-        // Reset dice after a short delay so user sees it
-        setTimeout(() => {
-          if (gameId) updateDoc(doc(db, 'games', gameId), { diceValue: null });
-        }, 1200);
-        return;
-      }
-
-      try {
-        await updateDoc(doc(db, 'games', gameId as string), {
+        
+        transaction.update(gameRef, {
           diceValue: val,
           consecutiveSixes: consecutive,
           updatedAt: serverTimestamp()
         });
-      } catch (err) {
-        handleFirestoreError(err, OperationType.UPDATE, `games/${gameId}`);
+        return { type: 'rolled', val };
+      });
+
+      if (result.type === 'triple6') {
+         toast.error("Triple 6! Turn passed.");
+         setTimeout(() => {
+           if (gameId) updateDoc(doc(db, 'games', gameId), { diceValue: null });
+         }, 1500);
+      } else if (result.type === 'nomoves') {
+         toast.error(`Rolled ${result.val}. No moves possible!`);
+         setTimeout(() => {
+           if (gameId) updateDoc(doc(db, 'games', gameId), { diceValue: null });
+         }, 1200);
       }
     } catch (e: any) {
       console.error("Roll error:", e);
+      toast.error(typeof e === 'string' ? e : e.message);
     }
   };
 
