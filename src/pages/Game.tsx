@@ -184,6 +184,7 @@ export default function Game() {
     const dice = game.diceValue;
     let nextPos: any = currentPos;
 
+    let tokenFinished = false;
     if (currentPos === 'base') {
       if (dice === 6) nextPos = 0;
       else return; 
@@ -197,6 +198,7 @@ export default function Game() {
         return; 
       } else if (currentPos + dice === playerPath.length) {
         nextPos = 'finished';
+        tokenFinished = true;
       } else {
         nextPos = currentPos + dice;
       }
@@ -231,10 +233,11 @@ export default function Game() {
     }
 
     if (captureHappened) toast.success("ENEMY CAPTURED! Bonus turn!");
+    if (tokenFinished) toast.success("TOKEN FINISHED! Bonus turn!");
 
     const winner = checkWinner(newTokens, game.players);
     const pCurrentIdx = game.players.indexOf(pid);
-    const nextTurnIdx = (dice === 6 || captureHappened) ? pCurrentIdx : getNextTurnIdx(pCurrentIdx);
+    const nextTurnIdx = (dice === 6 || captureHappened || tokenFinished) ? pCurrentIdx : getNextTurnIdx(pCurrentIdx);
 
     try {
       await updateDoc(doc(db, 'games', gameId as string), {
@@ -363,11 +366,11 @@ export default function Game() {
             return pos + val <= getPlayerPath(pIdx).length;
           });
 
-          if (movableTokens.length === 0 && val !== 6) {
-             const nextIdx = getNextTurnIdx(game.players.indexOf(pid));
+          if (movableTokens.length === 0) {
+             const nextIdx = val === 6 ? game.players.indexOf(pid) : getNextTurnIdx(game.players.indexOf(pid));
              await updateDoc(doc(db, 'games', gameId as string), {
                diceValue: val,
-               consecutiveSixes: 0,
+               consecutiveSixes: val === 6 ? consecutive : 0,
                currentTurn: game.players[nextIdx],
                updatedAt: serverTimestamp()
              });
@@ -397,6 +400,7 @@ export default function Game() {
           let nextTokens = { ...tokens };
           let captureHappened = false;
 
+          let tokenFinished = false;
           if (movableTokens.length > 0) {
             const chosenToken = movableTokens.sort((a, b) => {
               const posA = tokens[a] === 'base' ? -1 : tokens[a];
@@ -408,7 +412,10 @@ export default function Game() {
             if (nextPos === 'base') nextPos = 0;
             else {
                nextPos += val;
-               if (nextPos === getPlayerPath(pIdx).length) nextPos = 'finished';
+               if (nextPos === getPlayerPath(pIdx).length) {
+                 nextPos = 'finished';
+                 tokenFinished = true;
+               }
             }
             nextTokens[chosenToken] = nextPos;
 
@@ -440,7 +447,7 @@ export default function Game() {
 
           const winner = checkWinner(nextTokens, game.players);
           const pCurrentIdx = game.players.indexOf(pid);
-          const nextTurnIdx = (val === 6 || captureHappened) ? pCurrentIdx : getNextTurnIdx(pCurrentIdx);
+          const nextTurnIdx = (val === 6 || captureHappened || tokenFinished) ? pCurrentIdx : getNextTurnIdx(pCurrentIdx);
 
           await updateDoc(doc(db, 'games', gameId as string), {
             tokensPosition: nextTokens,
@@ -829,13 +836,13 @@ export default function Game() {
         return (typeof pos === 'number') && (pos + val <= pathLen);
       });
 
-      if (movableTokens.length === 0 && val !== 6) {
-        toast.error(`Rolled ${val}. No moves possible! Passing turn...`);
-        const nextIdx = getNextTurnIdx(game.players.indexOf(user?.uid));
+      if (movableTokens.length === 0) {
+        toast.error(`Rolled ${val}. No moves possible!`);
+        const nextIdx = val === 6 ? game.players.indexOf(user?.uid) : getNextTurnIdx(game.players.indexOf(user?.uid));
         try {
           await updateDoc(doc(db, 'games', gameId as string), {
             diceValue: val,
-            consecutiveSixes: 0,
+            consecutiveSixes: val === 6 ? consecutive : 0,
             currentTurn: game.players[nextIdx],
             updatedAt: serverTimestamp()
           });
